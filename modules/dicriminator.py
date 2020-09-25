@@ -118,3 +118,50 @@ class Discriminator(nn.Module):
 
         return output
 
+
+class DiscriminatorTest(nn.Module):
+    def __init__(self, input_channels, df_dim, number_classes, update_collection=None, act=nn.ReLU):
+        super(DiscriminatorTest, self).__init__()
+        self.input_channels = input_channels
+        self.df_dim = df_dim
+        self.number_classes = number_classes
+        self.update_collection = update_collection
+
+        self.act = act()
+
+        self.d_block = nn.Sequential(
+            OptimizedBlock(input_channels, df_dim, update_collection, act),
+            Block(df_dim, df_dim * 2, update_collection, act),
+            SNNonLocalBlockSIM(df_dim * 2),
+            Block(df_dim * 2, df_dim * 4, update_collection, act),
+            Block(df_dim * 4, df_dim * 8, update_collection, act),
+            Block(df_dim * 8, df_dim * 16, update_collection, act),
+            Block(df_dim * 16, df_dim * 16, update_collection, act),
+            act(),
+        )
+
+        self.d_sn_linear = SNLinear(df_dim * 16, 1)
+
+        self.embedding_map = torch.Tensor(number_classes, df_dim * 16)
+
+    def forward(self, image, labels):
+        x = self.d_block(image)         # B, df_dim*16
+
+        h6 = torch.sum(x, dim=(2, 3))   # B, df_dim*16
+        output = self.d_sn_linear(x)    # B, 1
+
+        ###############unclear###########
+        # Original code:
+        # h_labels = ops.sn_embedding(labels, number_classes, df_dim * 16,
+        #                             update_collection=update_collection,
+        #                             name='d_embedding')
+        #
+        onehot = torch.zeros(output.shape[0], self.number_classes)          # B, number_classes
+        onehot.scatter(1, labels.view(-1, 1).long(), 1)                     # B, number_classes
+
+        embedding_map_bar = spectral_norm(self.embedding_map, dim=1)        # df_dim*16, number_classes
+        h_labels = torch.matmul(onehot, embedding_map_bar)                  # B, df_dim*16
+        #################################
+        output = output + torch.sum(h6 * h_labels, dim=1, keepdim=True)
+
+        return output
